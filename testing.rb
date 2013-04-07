@@ -19,7 +19,8 @@ describe "ScrambledEgg" do
             text = (0..500).map{ ('0'..'z').to_a[rand(75)] }.join
             pwd = (0..100).map{ ('0'..'z').to_a[rand(75)] }.join
             encrypted = egg.encrypt(text, pre, enc, post, pwd)
-            #decrypted =
+            decrypted = egg.decrypt(encrypted, post, enc, pre, pwd)
+            decrypted.should eq(text)
           end
         end
       end

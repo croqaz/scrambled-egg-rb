@@ -8,6 +8,7 @@
 
 require "openssl"
 require "base64"
+require "json"
 require "zlib"
 
 =begin
@@ -21,17 +22,17 @@ SCRAMBLE = {
 	#:BZ2=> 'BZ',
 	#:Snappy=> 'S',
 	#:QlzRuby=> 'Q',
-	#:LzoRuby=> 'L'
+	#:LzoRuby=> 'L',
 }
 
 ENC = {
+	'None'=> 'N',
 	'AES-256-CFB'=> 'AES',
 	'BF-CFB'=> 'B',
 	'CAMELLIA-256-CFB'=> 'CAM',
 	'CAST5-CFB'=> 'CST',
 	'DES-EDE3-CFB8'=> 'DES',
 	'RC4-40'=> 'RC',
-	'None'=> 'N'
 }
 
 ENCODE = {
@@ -80,13 +81,14 @@ class ScrambledEgg
 	end #_error
 
 
-	def encrypt(text, pre, enc, post, pwd, tags=true)
+	def encrypt(text, pre, enc, post, pwd)#, tags=true)
+		puts "Encrypting pre: #{pre}, enc: #{enc}, post: #{post}."
 
 		# Scramble operation.
 		if pre == :None
 			nil
 		elsif pre == :ROT13
-			text.tr!("A-Za-z", "N-ZA-Mn-za-m")
+			text = text.tr("A-Za-z", "N-ZA-Mn-za-m")
 		elsif pre == :ZLIB
 			text = Zlib::Deflate.deflate(text)
 		elsif pre == :BZ2
@@ -101,13 +103,14 @@ class ScrambledEgg
 			fail 'Invalid scramble "%s" !' % [pre]
 		end
 
+		# Encryption operation.
 		if enc == 'None'
 			encrypted = text
 		else
 			begin
 				o = OpenSSL::Cipher::Cipher.new(enc)
 			rescue
-				fail 'Invalid  cipher algorithm "%s" !' % [enc]
+				fail 'Invalid cipher algorithm "%s" !' % [enc]
 			end
 			o.encrypt
 			o.key = OpenSSL::PKCS5.pbkdf2_hmac_sha1(pass=pwd, salt=@_salt1, iter=512, keylen=32)
@@ -121,16 +124,17 @@ class ScrambledEgg
 
 		# Encoding operation.
 		if post == :Base64
-			edict[:text] = Base64.encode64(encrypted).rstrip
+			edict[:text] = Base64.strict_encode64(encrypted)
 			final = '<@>%{pre}:%{enc}:%{post}<@>%{text}' % edict
 		elsif post == :HEX
+			# Hexencode is faster than `string.unpack('H*')`
 			edict[:text] = Digest.hexencode(encrypted)
 			final = '<@>%{pre}:%{enc}:%{post}<@>%{text}' % edict
 		elsif post == :Json
-			edict[:text] = Base64.encode64(encrypted).rstrip
+			edict[:text] = Base64.strict_encode64(encrypted)
 			final = '{"pre": "%{pre}", "enc": "%{enc}", "post": "%{post}", "data": "%{text}"}' % edict
 		elsif post == :XML
-			edict[:text] = Base64.encode64(encrypted).rstrip
+			edict[:text] = Base64.strict_encode64(encrypted)
 			final = "<root>\n<pre>%{pre}</pre><enc>%{enc}</enc><post>%{post}</post>\n<data>%{text}</data>\n</root>" % edict
 		else
 			fail 'Invalid codec "%s" !' % [post]
@@ -141,9 +145,67 @@ class ScrambledEgg
 	end #encrypt
 
 
-	def decrypt(txt, pre, enc, post, pwd)
+	def decrypt(text, pre, enc, post, pwd)
+		puts "Decrypting pre: #{pre}, enc: #{enc}, post: #{post}."
 
-	puts "Not implemented"
+		# Un-decode operation.
+		if pre == :Base64
+			text.gsub!(/\<@>.+\<@>/, '')
+			text = Base64.strict_decode64(text)
+		elsif pre == :HEX
+			text.gsub!(/\<@>.+\<@>/, '')
+			text = [text].pack('H*')
+		elsif pre == :Json
+			text = JSON::load(text)['data']
+			text = Base64.strict_decode64(text)
+		elsif pre == :XML
+			text.gsub!('<root>', '')
+			text.gsub!('</root>', '')
+			text.gsub!('<data>', '')
+			text.gsub!('</data>', '')
+			text.gsub!(/\<pre>.+\<\/post>/, '')
+			text = Base64.decode64(text)
+		else
+			fail 'Invalid codec "%s" !' % [pre]
+		end
+
+		# Decryption operation.
+		if enc == 'None'
+			decrypted = text
+		else
+			begin
+				o = OpenSSL::Cipher::Cipher.new(enc)
+			rescue
+				fail 'Invalid cipher algorithm "%s" !' % [enc]
+			end
+			o.decrypt
+			o.key = OpenSSL::PKCS5.pbkdf2_hmac_sha1(pass=pwd, salt=@_salt1, iter=512, keylen=32)
+			o.iv  = @_salt2
+			decrypted = o.update(text)
+			decrypted << o.final
+			o = nil
+		end
+
+		# Scramble operation.
+		if post == :None
+			final = decrypted
+		elsif post == :ROT13
+			final = decrypted.tr("A-Za-z", "N-ZA-Mn-za-m")
+		elsif post == :ZLIB
+			final = Zlib::Inflate.inflate(decrypted)
+		elsif post == :BZ2
+			final = BZ2.decompress(decrypted)
+		elsif post == :Snappy
+			final = Snappy.decompress(decrypted)
+		elsif post == :QlzRuby
+			final = QlzRuby.cdeompress(decrypted)
+		elsif post == :LzoRuby
+			final = LzoRuby.decompress(decrypted)
+		else
+			fail 'Invalid scramble "%s" !' % [post]
+		end
+
+		return final
 
 	end #decrypt
 
